@@ -1,158 +1,117 @@
-from io import BytesIO
-from pathlib import Path
+
 import re
 import pandas as pd
 
+def _norm(v):
+    if pd.isna(v): return ""
+    return re.sub(r"\s+", " ", str(v).strip()).lower()
 
-def infer_period(filename):
-    stem = Path(filename).stem
-    m = re.search(r"(?<!\d)(\d{2})(\d{2})(\d{4})(?!\d)", stem)
-    if m:
-        day, month, year = map(int, m.groups())
-        if 1 <= month <= 12:
-            return year, month
-    m = re.search(r"(?<!\d)(\d{4})[-_](\d{1,2})(?!\d)", stem)
-    if m:
-        return int(m.group(1)), int(m.group(2))
-    return None, None
+def _company_id_from_text(text):
+    s=_norm(text)
+    # Match explicit IDs or common company names
+    m=re.search(r"\b(?:empresa|id empresa|codigo empresa|c[oó]digo empresa)\s*[:#-]?\s*(13|2|252|31)\b", s)
+    if m: return int(m.group(1))
+    names={13:["bancolombia"],2:["western union","western"],252:["proteccion","protección"],31:["sura"]}
+    for cid, vals in names.items():
+        if any(x in s for x in vals): return cid
+    return None
 
-
-def _find_header_row(raw, required_column):
-    target = required_column.strip().lower()
-    for i in range(len(raw)):
-        values = {str(v).strip().lower() for v in raw.iloc[i].tolist() if pd.notna(v)}
-        if target in values:
+def _find_header_row(raw, required=("codigo",)):
+    for i in range(min(len(raw),100)):
+        vals=[_norm(x) for x in raw.iloc[i].tolist()]
+        if all(any(req==v or req in v for v in vals) for req in required):
             return i
-    raise ValueError(f'No se encontró una fila de encabezados con "{required_column}".')
+    return None
 
+def _find_col(columns, patterns):
+    for c in columns:
+        s=_norm(c)
+        if all(p in s for p in patterns):
+            return c
+    return None
 
-def _unique_columns(columns):
-    seen, result = {}, []
-    for value in columns:
-        base = str(value).strip() if pd.notna(value) else ""
-        base = base or "SIN_NOMBRE"
-        n = seen.get(base, 0)
-        seen[base] = n + 1
-        result.append(base if n == 0 else f"{base}_{n}")
-    return result
+def _extract_office_block(df):
+    # Find the first header containing CODIGO and a Presupuesto TRX header.
+    for i in range(min(len(df),100)):
+        vals=[_norm(x) for x in df.iloc[i].tolist()]
+        if any(v=="codigo" or v.startswith("codigo ") for v in vals) and any("presupuesto" in v for v in vals):
+            header=i
+            out=df.iloc[header+1:].copy()
+            out.columns=[str(x).strip() for x in df.iloc[header].tolist()]
+            # Stop at next row containing a repeated CODIGO header
+            stop=None
+            for j in range(len(out)):
+                vals2=[_norm(x) for x in out.iloc[j].tolist()]
+                if any(v=="codigo" for v in vals2):
+                    stop=j; break
+            if stop is not None: out=out.iloc[:stop]
+            return out
+    raise ValueError("No se encontró el bloque de oficinas con CODIGO y columnas de presupuesto.")
 
-
-def _office_id(value):
-    if pd.isna(value):
-        return None
-    n = pd.to_numeric(value, errors="coerce")
-    return None if pd.isna(n) else int(n)
-
-
-def _meta(value):
-    # 0 es una meta válida. Se trunca, no se redondea.
-    if pd.isna(value) or str(value).strip() == "":
-        return None
-    if isinstance(value, (int, float)):
-        return int(float(value))
-    s = str(value).strip().replace(" ", "")
-    if "." in s and "," in s:
-        s = s.replace(".", "").replace(",", ".")
-    elif "," in s:
-        s = s.replace(",", ".")
-    return int(float(s))
-
-
-def process_excel(file_bytes, filename, year, month, config):
-    source = config["source"]
-    sheet = source["preferred_sheet"]
-    office_col = source["office_id_column"]
-    meta_col = source["meta_column"]
-
-    companies = [c for c in config["companies"] if c.get("active", True)]
-    if not companies:
-        raise ValueError("No hay empresas activas.")
-
-    raw = pd.read_excel(
-        BytesIO(file_bytes),
-        sheet_name=sheet,
-        header=None,
-        engine="openpyxl"
-    )
-
-    header = _find_header_row(raw, office_col)
-    df = raw.iloc[header + 1:].copy()
-    df.columns = _unique_columns(raw.iloc[header].tolist())
-
-    if office_col not in df.columns:
-        raise ValueError(f'No se encontró "{office_col}".')
-    if meta_col not in df.columns:
-        raise ValueError(f'No se encontró "{meta_col}" en "{sheet}".')
-
-    office_meta = {}
-    ignored_non_numeric = []
-    ignored_without_meta = []
-
-    for _, row in df.iterrows():
-        raw_code = row[office_col]
-
-        # El segundo encabezado CODIGO termina el bloque real de oficinas.
-        if str(raw_code).strip().upper() == office_col.upper():
-            break
-
-        office = _office_id(raw_code)
-
-        # Solo códigos numéricos son oficinas.
-        if office is None:
-            if pd.notna(raw_code) and str(raw_code).strip():
-                ignored_non_numeric.append(str(raw_code).strip())
-            continue
-
-        raw_meta = row[meta_col]
-
-        # Meta vacía = fila auxiliar. Meta 0 se conserva.
-        if pd.isna(raw_meta) or str(raw_meta).strip() == "":
-            ignored_without_meta.append(office)
-            continue
-
-        meta = _meta(raw_meta)
-        if meta is None:
-            raise ValueError(f"La oficina {office} tiene una meta inválida: {raw_meta!r}.")
-
-        if office in office_meta and office_meta[office] != meta:
-            raise ValueError(
-                f"La oficina {office} aparece con dos metas diferentes "
-                f"({office_meta[office]} y {meta})."
-            )
-
-        office_meta[office] = meta
-
-    if not office_meta:
-        raise ValueError("No se encontraron oficinas válidas.")
-
-    records = []
-    for office, meta in office_meta.items():
-        for company in companies:
-            records.append({
-                "ID Oficina": office,
-                "Año": int(year),
-                "Mes": int(month),
-                "ID Empresa": int(company["id"]),
-                "Meta": int(meta),
-            })
-
-    result = pd.DataFrame(
-        records,
-        columns=["ID Oficina", "Año", "Mes", "ID Empresa", "Meta"]
-    )
-
-    audit = {
-        "offices": len(office_meta),
-        "companies": len(companies),
-        "records": len(result),
-        "zero_meta_offices": sum(1 for x in office_meta.values() if x == 0),
-        "low_meta_offices": sorted(
-            [(office, meta) for office, meta in office_meta.items() if 0 <= meta < 100],
-            key=lambda x: (x[1], x[0])
-        ),
-        "ignored_non_numeric_codes": ignored_non_numeric,
-        "ignored_rows_without_meta": ignored_without_meta,
-        "office_meta": sorted(office_meta.items(), key=lambda x: x[0]),
+def _presupuesto_columns(columns, companies):
+    """
+    Relaciona cada ID de empresa con su columna de presupuesto.
+    Acepta encabezados como:
+      - Presupuesto TRX Bancolombia
+      - Presupuesto Bancolombia
+      - Presupuesto Sura
+    No exige que todas las empresas tengan literalmente la palabra TRX.
+    """
+    mapping={}
+    names={
+        13:["bancolombia"],
+        2:["western union","western"],
+        252:["proteccion","protección"],
+        31:["sura"]
     }
+    for c in columns:
+        s=_norm(c)
+        if "presupuesto" not in s:
+            continue
+        for cid in companies:
+            if cid not in names:
+                continue
+            if any(name in s for name in names[cid]):
+                mapping[cid]=c
+                break
+    return mapping
 
-    return result, audit, header + 1
+def process_excel(file, year, month, companies):
+    xls=pd.ExcelFile(file)
+    sheet="Informe de Gestión" if "Informe de Gestión" in xls.sheet_names else xls.sheet_names[0]
+    raw=pd.read_excel(file,sheet_name=sheet,header=None)
+    df=_extract_office_block(raw)
+    office_col=next((c for c in df.columns if _norm(c)=="codigo"), None)
+    if office_col is None: raise ValueError("No se encontró la columna CODIGO.")
+    active=[c for c in companies if c.get("active",True)]
+    ids={int(c["id"]) for c in active}
+    meta_cols=_presupuesto_columns(df.columns, ids)
+    missing=ids-set(meta_cols)
+    if missing:
+        raise ValueError("No se encontraron columnas de presupuesto para las empresas: "+", ".join(map(str,sorted(missing))))
+    records=[]
+    offices=[]
+    for _,row in df.iterrows():
+        if pd.isna(row[office_col]): continue
+        try:
+            office=int(float(str(row[office_col]).replace(",","").strip()))
+        except: continue
+        offices.append(office)
+        for c in active:
+            val=row[meta_cols[int(c["id"])]]
+            if pd.isna(val) or str(val).strip()=="":
+                # Missing is distinct from zero; preserve valid zero.
+                raise ValueError(f"La oficina {office} no tiene valor en {meta_cols[int(c['id'])]}.")
+            try:
+                meta=int(float(str(val).replace(",","").strip()))
+            except:
+                raise ValueError(f"Valor no numérico para oficina {office}, empresa {c['id']}: {val}")
+            records.append({"ID Oficina":office,"Año":int(year),"Mes":int(month),"ID Empresa":int(c["id"]),"Meta":meta})
+    result=pd.DataFrame(records)
+    # Orden: empresa completa y, dentro de ella, todas sus oficinas.
+    company_order={13:0, 2:1, 252:2, 31:3}
+    result["_orden_empresa"]=result["ID Empresa"].map(company_order).fillna(999)
+    result=result.sort_values(["_orden_empresa","ID Oficina"], kind="stable").drop(columns=["_orden_empresa"]).reset_index(drop=True)
+    audit=result.groupby("ID Oficina")["Meta"].agg(["min","max"]).reset_index()
+    return result, audit, {"sheet":sheet,"offices":len(set(offices)),"records":len(result),"meta_columns":meta_cols}
+

@@ -1,9 +1,4 @@
 {
-  "source": {
-    "preferred_sheet": "Informe de Gestión",
-    "office_id_column": "CODIGO",
-    "meta_column": "Equivalentes Esperadas"
-  },
   "companies": [
     {
       "id": 13,
@@ -17,7 +12,7 @@
     },
     {
       "id": 252,
-      "name": "Protección",
+      "name": "Proteccion",
       "active": true
     },
     {
@@ -25,5 +20,11 @@
       "name": "Sura",
       "active": true
     }
-  ]
+  ],
+  "source": {
+    "preferred_sheet": "Informe de Gestión",
+    "office_id_column": "CODIGO",
+    "meta_mode": "presupuesto_por_empresa",
+    "meta_header_keyword": "Presupuesto"
+  }
 }
