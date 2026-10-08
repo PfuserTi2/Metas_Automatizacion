@@ -28,3 +28,7 @@ La descarga ahora es un archivo Excel `.xlsx` real, con las columnas separadas: 
 
 ## V8
 El resultado se ordena por empresa en este orden: 13, 2, 252 y 31. Dentro de cada empresa aparecen todas sus oficinas ordenadas por ID de oficina.
+
+
+## V9
+La empresa 252 corresponde a **Protección Virtual** y utiliza exclusivamente la columna **Presupuesto TRX Protección Virtual**.

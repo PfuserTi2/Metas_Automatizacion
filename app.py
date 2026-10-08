@@ -16,7 +16,7 @@ month=c2.number_input("Mes", min_value=1, max_value=12, value=9)
 companies=[
  {"id":13,"name":"Bancolombia","active":True},
  {"id":2,"name":"Western Union","active":True},
- {"id":252,"name":"Proteccion","active":True},
+ {"id":252,"name":"Protección Virtual","active":True},
  {"id":31,"name":"Sura","active":True},
 ]
 if uploaded and st.button("🚀 Procesar"):

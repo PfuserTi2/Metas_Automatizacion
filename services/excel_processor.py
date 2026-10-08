@@ -1,17 +1,19 @@
 
 import re
+import unicodedata
 import pandas as pd
 
 def _norm(v):
     if pd.isna(v): return ""
-    return re.sub(r"\s+", " ", str(v).strip()).lower()
+    s = re.sub(r"\s+", " ", str(v).strip()).lower()
+    return "".join(ch for ch in unicodedata.normalize("NFD", s) if unicodedata.category(ch) != "Mn")
 
 def _company_id_from_text(text):
     s=_norm(text)
     # Match explicit IDs or common company names
     m=re.search(r"\b(?:empresa|id empresa|codigo empresa|c[oó]digo empresa)\s*[:#-]?\s*(13|2|252|31)\b", s)
     if m: return int(m.group(1))
-    names={13:["bancolombia"],2:["western union","western"],252:["proteccion","protección"],31:["sura"]}
+    names={13:["bancolombia"],2:["western union","western"],252:["proteccion virtual"],31:["sura"]}
     for cid, vals in names.items():
         if any(x in s for x in vals): return cid
     return None
@@ -61,7 +63,7 @@ def _presupuesto_columns(columns, companies):
     names={
         13:["bancolombia"],
         2:["western union","western"],
-        252:["proteccion","protección"],
+        252:["proteccion virtual"],
         31:["sura"]
     }
     for c in columns:
